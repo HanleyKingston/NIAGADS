@@ -1,0 +1,389 @@
+---
+title: "NG00020 phenotype QC & prep"
+author: Jai Broome
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    code_folding: show
+
+*pulled from /nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/pheno/pheno_qc.html on 12/14, edits by Hanley Kingston
+---
+
+# Setup
+
+```{r setup, message = FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(magrittr)
+library(survival)
+library(knitr)
+library(Biobase)
+library(SeqArray)
+library(blPipeline)
+```
+
+# Read data
+
+```{r read_data}
+sampled <- read.csv("/nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_11_16 Age and Source File.csv")
+
+pheno <- read.csv("/nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_08_24_phenotype_data.csv")
+
+dup_vars <- names(pheno)[names(pheno) %in% names(sampled)]
+dup_vars <- dup_vars[dup_vars != "SUBJ_NO"]
+
+apoe <- read.csv("/nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_12_17 APOE results.csv") %>%
+  mutate(E2 = (Translated_Allele1 == "E2") + (Translated_Allele2 == "E2"),
+         E3 = (Translated_Allele1 == "E3") + (Translated_Allele2 == "E3"),
+         E4 = (Translated_Allele1 == "E4") + (Translated_Allele2 == "E4"))
+
+dd <- file.path("/nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_07_24_data_dictionary.csv") %>%
+  read.csv() %>%
+  # Subset to just variables we're using for this ADF
+  filter(VARNAME %in% c(names(pheno), names(sampled)), VARNAME != "SUBJ_NO") %>%
+  select(VARNAME, labelDescription = VARDESC) %>%
+  rbind(c(VARNAME = "AgeAtLastEval", labelDescription = "Age at last evaluation"))
+
+dd_pheno <- dd_sampled <- filter(dd, VARNAME %in% dup_vars)
+
+dd_pheno$VARNAME %<>% paste0("_pheno")
+dd_pheno$labelDescription %<>% paste("(from 2009_08_24_phenotype_data.csv)")
+dd_sampled$VARNAME %<>% paste0("_source")
+dd_sampled$labelDescription %<>% paste("(from 2009_11_16 Age and Source File.csv)")
+
+dd %<>% filter(!(VARNAME %in% dup_vars)) %>%
+  bind_rows(dd_pheno, dd_sampled)# %>%
+  #rbind(dd_pcs)
+
+
+pheno %<>% full_join(sampled, "SUBJ_NO", suffix = c("_pheno", "_source")) %>%
+  #full_join(pcs, "SUBJ_NO") %>%
+  full_join(apoe, c(SUBJ_NO = "CIDR2_Subj_No")) %>%
+  mutate(across(matches("age"), ~ifelse(.x == 999, NA, .x))) %>%
+  # Several age variables are in both datasets. Create index where they don't match
+  mutate(AgeDxDemMatch = AgeDxDem_pheno == AgeDxDem_source,
+         AgeAtLastEvalMatch = AgeAtLastEval_pheno == AgeAtLastEval_source)
+
+```
+
+# Make age variable
+
+Create a simple function that takes a variable name and makes that the age
+variable for any missing observations in `x$age`, and records the source.
+
+```{r make_age_var, warning = FALSE}
+pheno$age <- NA_integer_
+pheno$age_source <- NA_character_
+make_age_var <- function(x, y){
+  i <- is.na(x$age)
+  x$age[i] <- x[[y]][i]
+  x$age_source[i] <- y
+  x
+}
+# Specify the order we want the age variable for cases
+cases <- filter(pheno, Case_Control == "1") %>%
+  make_age_var("AgeDem_pheno") %>%
+  make_age_var("AgeDem_source") %>%
+  make_age_var("AgeDxDem_source") %>%
+  make_age_var("AgeDxDem_pheno") %>%
+  make_age_var("Sampled.Age") %>%
+  make_age_var("AgeAtLastEval_pheno") %>%
+  make_age_var("AgeAtLastEval_source") %>%
+  make_age_var("AgeDeath") %>%
+  # Only one observation mismatched and it's already flagged, so min/max order
+  # doesn't matter.
+  mutate(dx_age_diff = pmin(AgeDxDem_pheno, AgeDxDem_source, na.rm = TRUE) -
+                       pmax(AgeDem_pheno, AgeDem_source, na.rm = TRUE),
+         # Indicator for when Dx is before symptoms
+         dx_age_flag = dx_age_diff < 0,
+         # Indicator for when lag between symptoms and Dx is greater than 10
+         # years
+         long_lag_dx_flag = dx_age_diff > 10,
+         control_with_dem = NA)
+# Specify order for controls
+controls <- filter(pheno, Case_Control == "0") %>%
+  make_age_var("AgeAtLastEval_source") %>%
+  make_age_var("AgeAtLastEval_pheno") %>%
+  make_age_var("Sampled.Age") %>%
+  make_age_var("AgeDeath") %>%
+  rowwise() %>%
+  mutate(dx_age_diff = NA, dx_age_flag = NA, long_lag_dx_flag = NA,
+         # Indicator for controls that have an age-at-sympmtom observation
+         control_with_dem = !all(is.na(AgeDem_pheno), is.na(AgeDem_source),
+                                 is.na(AgeDxDem_pheno), is.na(AgeDxDem_source)))
+# Recombine cases and controls
+rec <- rbind(cases, controls)
+```
+
+# Age variable QC
+
+## Age source by case/control status
+
+```{r age_source}
+age_source.table <- select(rec, age_source, Case_Control) %>% table(useNA = "ifany")
+write.table(age_source.table, "/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/age_source_table.txt")
+
+```
+
+## Variable discrepency
+
+There are a handful of cases where variables that appear in both datasets have
+different values:
+
+```{r age_scatter}
+dat_plot <- select(rec, SUBJ_NO, ends_with("_pheno"), ends_with("_source"),
+       -starts_with("BirthYr"), -age_source) %>%
+  pivot_longer(!SUBJ_NO, c("age_var", ".value"), names_sep = "_") %>%
+  filter(pheno != source, !is.na(pheno), !is.na(source)) %>%
+  left_join(pheno, "SUBJ_NO")
+my_lims <- c(min(dat_plot$pheno, dat_plot$source),
+             max(dat_plot$pheno, dat_plot$source))
+
+png("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/age_discrepancy_between_files.png")
+ggplot(dat_plot, aes(x = pheno, y = source, color = as.factor(Case_Control))) +
+  geom_point() +
+  facet_grid(cols = vars(age_var)) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  coord_fixed() +
+  xlim(my_lims) +
+  ylim(my_lims)
+dev.off()
+```
+
+`AgeAtLastEval` was the age variable used for all 15 instances where it didn't
+match between the two files
+
+```{r age_test_qc}
+rec$pass_qc <- TRUE
+select(rec, age_source, AgeAtLastEvalMatch) %>%
+  filter(!AgeAtLastEvalMatch) %>%
+  kable()
+ind <- !rec$AgeAtLastEvalMatch & rec$age_source == "AgeAtLastEval_source"
+ind[is.na(ind)] <- FALSE
+rec$pass_qc[ind] <- FALSE
+```
+
+## Age-at-symptoms and age-at-Dx
+
+There are 12 observations with diagnosis _before_ onset of symptoms
+
+```{r dx_before_symptoms}
+select(cases, AgeDxDem_pheno, AgeDxDemMatch, AgeDem_pheno, dx_age_diff,
+       dx_age_flag) %>%
+  filter(dx_age_diff < 0) %>%
+  kable()
+```
+
+These are flagged here along with those where there was a ten year gap between onset
+of symptoms and a diagnosis. The grey line is the identity line and the black
+line marks a difference of ten years.
+
+```{r plot_dx_age_diff, warning = FALSE}
+png("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/age_DxvsAge_Dem.png")
+mutate(cases, flag = dx_age_flag | long_lag_dx_flag) %>%
+  ggplot(aes(x = AgeDem_pheno, y = AgeDxDem_pheno, color = flag)) +
+  geom_jitter() +
+  geom_abline(slope = 1, intercept = 0, color = "grey") +
+  geom_abline(slope = 1, intercept = 10, color = "black") +
+  coord_fixed()
+dev.off()
+```
+
+And here is the difference for all subjects, not just those flagged:
+
+```{r hist_diff}
+png("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/age_DxvsAge_Dem_hist.png")
+ggplot(cases, aes(x = dx_age_diff)) + geom_histogram(binwidth = 1) +
+  geom_vline(xintercept = 0, color = "red")
+dev.off()
+```
+
+Note the steep dropoff at exactly the 10 year mark.
+
+```{r dx_age_flag}
+ind <- rec$dx_age_flag
+ind[is.na(ind)] <- FALSE
+rec$pass_qc[ind] <- FALSE
+```
+
+```{r long_lag_dx_flag}
+ind <- rec$long_lag_dx_flag
+ind[is.na(ind)] <- FALSE
+rec$pass_qc[ind] <- FALSE
+```
+
+## 3 controls have a age-at-dementia or age-at-Dx variable
+
+```{r}
+filter(controls, control_with_dem) %>%
+  select(matches("agedem"), matches("agedx"), control_with_dem) %>%
+  kable()
+ind <- filter(controls, control_with_dem)$SUBJ_NO
+rec$pass_qc[rec$SUBJ_NO %in% ind] <- FALSE
+```
+
+## The mismatched `AgeDem` variable wasn't used:
+
+```{r}
+select(rec, age_source, AgeDxDemMatch) %>%
+  filter(!AgeDxDemMatch) %>%
+  kable()
+```
+
+```{r}
+rec[!rec$pass_qc, ] %>%
+  group_by(Case_Control, age_source, dx_age_flag, long_lag_dx_flag,
+           control_with_dem, AgeDxDemMatch, AgeAtLastEvalMatch) %>%
+  summarize(n = n()) %>%
+  kable()
+
+#Can't figure out how to save this, so copied and pasted it into thi file:
+#save_kable(source_of_flag, "/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/pheno_flagged_samples.txt")
+```
+
+# APOE allele QC
+
+Confirm that E2/E3/E4 allele counts all make sense
+
+```{r apoe_qc}
+group_by(rec, Translated_Allele1, Translated_Allele2, E2, E3, E4) %>%
+  summarize(n = n())
+
+allele_counts <- group_by(rec, Translated_Allele1, Translated_Allele2, E2, E3, E4) %>%
+  summarize(n = n())
+
+allele_counts
+
+write.table(allele_counts, "/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/allele_coutns_table.txt")
+```
+
+
+# Survival
+
+```{r}
+gds <- seqOpen("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/data/D_LOAD_families_010413_aut.gds")
+gds.id <- seqGetData(gds, "sample.id")
+ids.missing <- gds.id[!(gds.id %in% rec$SUBJ_NO)]
+seqClose(gds)
+rec %<>% bind_rows(data.frame(SUBJ_NO = ids.missing))
+covars <- c("E2", "E4", "E3")
+rec <- rec[match(gds.id, rec$SUBJ_NO), ] %>%
+  make_resids("age", "Case_Control", covars = c("SEX", covars))
+m <- filter(rec, SEX == 1) %>%
+  make_resids("age", "Case_Control", "surv_sex_strat", covars,
+              mgl_name = "mgl_sex_strat", dev_name = "dvr_sex_strat")
+rec %<>% filter(SEX == 2 | is.na(SEX)) %>%
+  make_resids("age", "Case_Control", "surv_sex_strat", covars,
+              mgl_name = "mgl_sex_strat", dev_name = "dvr_sex_strat") %>%
+  rbind(m)
+```
+
+# Write out AnnotatedDataFrame
+
+## Change sample ID variable name to expected value
+
+```{r sampname}
+rec %<>% rename(sample.id = SUBJ_NO)
+```
+
+## reformat sex, race, and ethnicity variables for plotting
+rec <- rec %>%
+    mutate(SEX=c("1"="M", "2"="F")[as.character(SEX)],
+           Race=c("1"="White", "2"="Black", "3"="AI_AN", "4"="Asian_PI", "50"="Other")[as.character(Race)],
+           Hispanic=c("1"="yes", "2"="no")[as.character(Hispanic)],
+			  race_ethnicity = case_when(
+					(Race == "Other" | Race == "AI_AN" | Race == "Asian_PI") & Hispanic == "yes" ~ "Other_Hispanic",
+					Race == "Black" & Hispanic == "yes" ~ "Black_Hispanic",
+					Race == "White" & Hispanic == "yes" ~ "White_Hispanic",
+					TRUE ~ Race
+           )
+		)
+
+## Make E2 and E4 carrier and het/hom columns
+rec <- rec %>%
+	mutate(
+		E2_carrier = case_when(E2 == 1 | E2 == 2 ~ "yes",
+									  E2 == 0 ~ "no"),
+		E4_carrier = case_when(E4 == 1 | E4 == 2 ~ "yes",
+									  E4 == 0 ~ "no"),
+		E2_het_hom = case_when(E2 == 1 ~ "heterozygote",
+									  E2 == 2 ~ "homozygote"),
+		E4_het_hom = case_when(E4 == 1 ~ "heterozygote",
+									  E4 == 2 ~ "homozygote")
+			)
+
+rec[!rec$pass_qc, ] %>%
+  group_by(E2, E4, E2_carrier, E4_carrier, E2_het_hom, E4_het_hom) %>%
+  summarize(n = n()) %>%
+  kable()
+
+#saved to: "/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/logical_APOE_genotype_check.txt"
+
+
+```{r}
+dd %<>% rbind(
+    c("sample.id", "Sample ID"),
+    # Some variables we started with aren't defined in the DD. I haven't
+    # attempted to define them here.
+	 c("race_ethnicity", ""),
+	 c("E2_carrier", ""),
+	 c("E4_carrier", ""),
+	 c("E2_het_hom", "non-carriers are NA"),
+	 c("E4_het_hom", "non-carriers are NA"),
+    c("EvalYr", ""),
+    c("EvalMeth", ""),
+    c("Sampled.Age", ""),
+    c("Sample.Type", ""),
+    c("AgeDxDemMatch", "AgeDxDem is the same in both datasets"),
+    c("AgeAtLastEvalMatch", "AgeAtLastEval is the same in both datasets"),
+    c("age", "Selected age for cases and controls. See phenotype QC for details."),
+    c("age_source", "Source variable and dataset for variable `age`"),
+    c("dx_age_diff", "Difference between age at AD Dx and dementia symptoms"),
+    c("dx_age_flag", "Flag for cases where onset of symptoms is recorded as after diagnosis"),
+    c("long_lag_dx_flag", "Flag for cases with greater than ten year lag between onset of dementia symptoms and AD Dx"),
+    c("control_with_dem", "Controls with some recorded 'age-at-dem' variable"),
+    c("pass_qc", "Passes all flags"),
+    c("surv", "output from survival::Surv()"),
+    c("devres", "Deviance residuals from survival::residuals()"),
+    c("martingale", "Martingale residuals from survival::residuals()"),
+    c("surv_sex_strat", "sex-stratified output from survival::Surv()"),
+    c("dvr_sex_strat", "sex-stratified deviance residuals"),
+    c("mgl_sex_strat", "sex-stratified martingale residuals"),
+    c("rs429358.Allele_1", ""),
+    c("rs429358.Allele_2", ""),
+    c("Confidence", ""),
+    c("rs7412.Allele1", ""),
+    c("rs7412.Allele2", ""),
+    c("Confidence2", ""),
+    c("Translated_Allele1", ""),
+    c("Translated_Allele2", ""),
+    c("E2", "Count of APOE2 alleles"),
+    c("E3", "Count of APOE3 alleles"),
+    c("E4", "Count of APOE4 alleles")
+  ) %>%
+  as.data.frame()
+
+if (length(names(rec)[!(names(rec) %in% dd$VARNAME)]) != 0) {
+  stop("There are undefined variables")
+}
+if (length(dd$VARNAME[!(dd$VARNAME %in% names(rec))]) != 0) {
+  stop("There are entries in the DD that are not in the dataset")
+}
+
+id.keep <- rec$sample.id[rec$pass_qc & !is.na(rec$pass_qc)]
+length(id.keep)
+#[1] 4412
+
+saveRDS(id.keep, "/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/pass_pheno_qc.rds")
+
+vmd <- select(dd, labelDescription)
+rownames(vmd) <- dd$VARNAME
+pheno_adf <- AnnotatedDataFrame()
+pData(pheno_adf) <- as.data.frame(rec)
+varMetadata(pheno_adf) <- vmd
+
+saveRDS(pheno_adf, "/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/pheno/out/pheno_adf.rds")
+```
