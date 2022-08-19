@@ -1,0 +1,478 @@
+```{bash}
+cd /nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/
+```
+
+```{R}
+#Note: sorry for inconsistant naming convention. "all", "base" and "no_APOE" all refer to the base models from each study that use an unstratified sample set and don't adjust for APOE or include an interaction term
+
+
+library(dplyr)
+library(qqman)
+
+# Function to plot correlations and save regression outputs:
+plot_corr <- function(P1, P2, random_subset, title, xlab, ylab){
+my_lm <- coef(summary(lm(P1~P2)))
+intercept <- my_lm[1,1]
+slope <- my_lm[2,1]
+R_sq <- signif((cor(P1, P2))^2, 2)
+
+sink(paste0(title,"_lm.txt"))
+print(paste("P2 =", ylab))
+print(summary(lm(P1~P2)))
+sink()
+
+myplot <- plot(-log10(P1[random_subset]), -log10(P2[random_subset]), pch = "+", cex = 0.5, main = paste(title, "\n(-log10(P))"), xlab = xlab, ylab = ylab, xlim = c(0,10), ylim = c(0,10))
+abline(a = intercept, b = slope, col = "red")
+legend("topright", bty="n", legend=paste("R^2 =", R_sq))
+}
+
+
+
+# read each study into R
+
+
+# /nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only
+## Jun (2017) / IGAP
+
+#meta-analysis results for the discovery (stage 1)
+Jun_col_names <- c("CHR", "BP", "MarkerName", "Allele1", "Allele2", "P.value")
+#Marker_Name = chr-baseposition
+
+Jun_transethnic_APOE_int <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_INT_wt_APOE.e4.status_p-value_only.tbx", col.names = Jun_col_names)
+#Build 37
+
+nrow(Jun_transethnic_APOE_int)
+#[1] 7526701
+
+
+Jun_transethnic_APOE_noncarriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_APOE.e4.non-carriers_p-value_only.tbx", col.names = Jun_col_names)
+
+nrow(Jun_transethnic_APOE_noncarriers)
+#[1] 7263512
+#all Markernames are unique
+
+Jun_transethnic_APOE_carriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_APOE.e4.carriers_p-value_only.tbx", col.names = Jun_col_names)
+
+nrow(Jun_transethnic_APOE_carriers)
+#[1] 7579944
+
+#check:
+length(intersect(Jun_transethnic_APOE_noncarriers$MarkerName, Jun_transethnic_APOE_carriers$MarkerName))
+#[1] 7173818
+nrow(inner_join(Jun_transethnic_APOE_noncarriers, Jun_transethnic_APOE_carriers, by = "MarkerName"))
+#[1] 7173818
+#inner_join will return only the rows present in each study
+
+Jun_transethnic_all <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_ALL.sample_p-value_only.tbx", col.names = Jun_col_names)
+
+nrow(Jun_transethnic_all)
+#[1] 7343832
+
+#Merge all tables
+merge.table <- Jun_transethnic_APOE_int %>% 	inner_join(Jun_transethnic_APOE_noncarriers, by = "MarkerName", suffix = c(".int", ".non_c")) %>%
+	inner_join(Jun_transethnic_APOE_carriers, by = "MarkerName") %>%
+	inner_join(Jun_transethnic_all, by = "MarkerName", suffix = c(".carrier", ".all"))
+
+nrow(merge.table)
+#[1] 7117936
+
+#Remove chr19 to avoid big spike from APOE and select just p-value columns
+merge.table.P <- merge.table %>%
+	filter(CHR.int != 19) %>%
+	select(P.value.int, P.value.non_c, P.value.carrier, P.value.all) %>%
+	as.data.frame #%>%
+	#apply(2, function(X) -log10(X)) #take -log of p-value
+
+
+#test correlation between unadjusted model and otehr models	
+allXinteraction <- (cor(merge.table.P$P.value.all, merge.table.P$P.value.int))^2
+#[1] 2.721347e-06
+allXcarrier <- (cor(merge.table.P$P.value.all, merge.table.P$P.value.carrier))^2
+#[1] 0.06264479
+allXnon_carrier <- (cor(merge.table.P$P.value.all, merge.table.P$P.value.non_c))^2
+#[1] 0.1293069
+carrierXnon_carrier <- (cor(merge.table.P$P.value.carrier, merge.table.P$P.value.non_c))^2
+#[1] 1.14564e-06
+
+#Plot correlations (and save regression output):
+set.seed(17)
+rand <- sample(1:nrow(merge.table.P), 100000) #use a random subset to reduce plottign time
+
+png("Jun_2017_transethnic_IGAP_P_corr.png")
+par(mfrow=c(2,2))
+plot_corr(merge.table.P$P.value.all, merge.table.P$P.value.int, rand, "transethnic_allXinteraction", "no APOE", "interaction")
+plot_corr(merge.table.P$P.value.all, merge.table.P$P.value.carrier, rand, "transethnic_allXcarrier", "no APOE", "APOE carriers")
+plot_corr(merge.table.P$P.value.all, merge.table.P$P.value.non_c, rand, "transethnic_allXnon_carrier", "no APOE", "APOE non-carriers")
+plot_corr(merge.table.P$P.value.carrier, merge.table.P$P.value.non_c, rand, "transethnic_carrierXnon_carrier", "APOE carriers", "APOE non-carriers")
+dev.off()
+
+
+
+#Get Miami plots
+miami_plot <- function(data, title1, title2, main_title){
+CHR1 <- paste0("CHR.", title1)
+CHR2 <- paste0("CHR.", title2)
+BP1 <- paste0("BP.", title1)
+BP2 <- paste0("BP.", title2)
+P1 <- paste0("P.value.", title1)
+P2 <- paste0("P.value.", title2)
+
+par(mfrow=c(2,1))
+par(mar=c(0,5,3,3))
+manhattan(data, suggestiveline = F, genomewideline = -log10(5e-8), chr = CHR1, bp = BP1, p = P1, ylim=c(0,15), cex=0.3, sub = title1, main = main_title)
+par(mar=c(5,5,3,3))
+manhattan(data, suggestiveline = F, genomewideline = -log10(5e-8), chr = CHR2, bp = BP2, p = P2, ylim=c(15,0),cex=0.3,xaxt="n", xlab = title2)
+}
+
+
+png("Jun_2017_transethnic_IGAP_allXinteraction_miami_plot.png")
+miami_plot(merge.table, "all", "int", "Jun 2017 transethnic no APOE X interaction")
+dev.off()
+
+png("Jun_2017_transethnic_IGAP_allXcarrier_miami_plot.png")
+miami_plot(merge.table, "all", "carrier", "Jun 2017 transethnic no APOE X carrier")
+dev.off()
+
+png("Jun_2017_transethnic_IGAP_allXnon_carrier_miami_plot.png")
+miami_plot(merge.table, "all", "non_c",  "Jun 2017 transethnic no APOE X non-carrier")
+dev.off()
+
+png("Jun_2017_transethnic_IGAP_carrierXnon_carrier_miami_plot.png")
+miami_plot(merge.table, "carrier", "non_c",  "Jun 2017 transethnic carrier X non-carrier")
+dev.off()
+
+
+----------
+
+
+# /nfs/beluga0_home/DATA/SummaryStats/NG00100-p-value_only
+## Kunkle (2020)
+Kunkle_col_names <- c("CHR", "BP", "MarkerName", "Effect_Allele", "Non_Effect_Allele", "P.value")
+
+Kunkle_AA_APOE_adj <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00100-p-value_only/Kunkle2020_ADGC_AA_META_Model2_SummaryStats_p-value_only.txt", col.names = Kunkle_col_names, header = TRUE)
+#Build 37
+nrow(Kunkle_AA_all)
+#[1] 29610184
+
+Kunkle_AA_all <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00100-p-value_only/Kunkle2020_ADGC_AA_META_Model1_SummaryStats_p-value_only.txt", col.names = Kunkle_col_names, header = TRUE)
+nrow(Kunkle_AA_APOE_adj)
+#[1] 27724505
+
+
+#Merge all tables
+merge.table2 <- Kunkle_AA_all %>%
+	inner_join(Kunkle_AA_APOE_adj, by = "MarkerName", suffix = c(".all",".APOE_adj"))
+nrow(merge.table2)
+#[1] 27360237
+
+#Remove chr19 to avoid big spike from APOE and select just p-value columns
+merge.table2.P <- merge.table2 %>%
+	filter(CHR.all != 19) %>%
+	select(P.value.all, P.value.APOE_adj) %>%
+	as.data.frame
+
+
+
+#test correlation between unadjusted model and other models	
+all_APOE_adj <- (cor(merge.table2.P$P.value.all, merge.table2.P$P.value.APOE_adj))^2
+#[1] 0.5007767
+
+
+rand2 <- sample(1:nrow(merge.table2.P), 100000)
+
+png("Kunkle_2020_AA_Pcorr.png")
+plot_corr(merge.table2.P$P.value.all, merge.table2.P$P.value.APOE_adj, rand2, "AA_allXAPOE_adjusted", "no APOE", "APOE adjusted")
+dev.off()
+
+
+png("Kunkle_2020_AA_allXadjustment_miami_plot.png")
+miami_plot(merge.table2, "all", "APOE_adj", "Kunkle 2020 AA no APOE X APOE adjusted")
+dev.off()
+
+-------------
+
+
+# /nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/
+##Jun (2016) / IGAP
+
+Jun_col_names2 <- c("CHR", "BP", "SNP", "MarkerName", "Allele1", "Allele2", "P.value")
+
+Jun_Eur_APOE_int <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_INT.wt.APOE_p-value_only.txt", col.names = Jun_col_names2)
+#Build 37
+
+nrow(Jun_Eur_APOE_int)
+#[1] 6884078
+
+Jun_Eur_APOE_noncarriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_APOE.e4.Noncarriers_p-value_only.txt", col.names = Jun_col_names2)
+
+nrow(Jun_Eur_APOE_noncarriers)
+#[1] 6820744
+
+Jun_Eur_APOE_carriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_APOE.e4.Carriers_p-value_only.txt", col.names = Jun_col_names2)
+
+nrow(Jun_Eur_APOE_carriers)
+#[1] 6771288
+
+Jun_Eur_all <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_All.Sample_p-value_only.txt", col.names = Jun_col_names2)
+#Double check this is no APOE adjustment
+
+nrow(Jun_Eur_all)
+#[1] 6890698
+
+
+#Merge all tables
+merge.table3 <- Jun_Eur_APOE_int %>% 	inner_join(Jun_Eur_APOE_noncarriers, by = "MarkerName", suffix = c(".int", ".non_c")) %>%
+	inner_join(Jun_Eur_APOE_carriers, by = "MarkerName") %>%
+	inner_join(Jun_Eur_all, by = "MarkerName", suffix = c(".carrier", ".all"))
+
+nrow(merge.table3)
+#[1] 6722129
+
+#Remove chr19 to avoid big spike from APOE and select just p-value columns
+merge.table3.P <- merge.table3 %>%
+	filter(CHR.int != 19) %>%
+	select(P.value.int, P.value.non_c, P.value.carrier, P.value.all) %>%
+	as.data.frame
+
+
+#test correlation between unadjusted model and other models	
+allXinteraction2 <- (cor(merge.table3.P$P.value.all, merge.table3.P$P.value.int))^2
+#[1] 4.141696e-06
+allXcarrier2 <- (cor(merge.table3.P$P.value.all, merge.table3.P$P.value.carrier))^2
+#[1] 0.02726045
+allXnon_carrier2 <- (cor(merge.table3.P$P.value.all, merge.table3.P$P.value.non_c))^2
+#[1] 0.08855514
+carrierXnon_carrier2 <- (cor(merge.table3.P$P.value.carrier, merge.table3.P$P.value.non_c))^2
+#[1] 0.0001130519
+
+
+rand3 <- sample(1:nrow(merge.table3.P), 100000) 
+
+png("Jun_2016_EUR_IGAP_P_corr.png")
+par(mfrow=c(2,2))
+plot_corr(merge.table3.P$P.value.all, merge.table3.P$P.value.int, rand3, "Eur_allXinteraction", "no APOE", "interaction")
+plot_corr(merge.table3.P$P.value.all, merge.table3.P$P.value.carrier, rand3, "Eur_allXcarrier", "no APOE", "APOE carriers")
+plot_corr(merge.table3.P$P.value.all, merge.table3.P$P.value.non_c, rand3, "Eur_allXnon_carrier", "no APOE", "APOE non-carriers")
+plot_corr(merge.table3.P$P.value.carrier, merge.table3.P$P.value.non_c, rand3, "Eur_carrierXnon_carrier", "APOE carriers", "APOE non-carriers")
+dev.off()
+
+
+png("Jun_2016_EUR_IGAP_allXinteraction_miami_plot.png")
+miami_plot(merge.table3, "all", "int", "Jun 2016 EUR no APOE X interaction")
+dev.off()
+
+png("Jun_2016_EUR_IGAP_allXcarrier_miami_plot.png")
+miami_plot(merge.table3, "all", "carrier", "Jun 2016 EUR no APOE X carriers")
+dev.off()
+
+png("Jun_2016_EUR_IGAP_allXnon_carrier_miami_plot.png")
+miami_plot(merge.table3, "all", "non_c", "Jun 2016 EUR no APOE X non-carriers")
+dev.off()
+
+png("Jun_2016_EUR_IGAP_carrierXnon-carrier_miami_plot.png")
+miami_plot(merge.table3, "carrier", "non_c", "Jun 2016 EUR carriers X non-carriers")
+dev.off()
+
+
+
+---
+# Test correlation by ancestry
+#Make Kunkle MarkerName column match format of Jun
+Kunkle_AA_all$MarkerName <- paste0(Kunkle_AA_all$CHR, "-", Kunkle_AA_all$BP)
+
+#Merge all tables
+merge.table4 <- Jun_transethnic_all %>% 
+	inner_join(Jun_Eur_all, by = "MarkerName", suffix = c(".trans", ".EUR")) %>%
+	inner_join(Kunkle_AA_all, by = "MarkerName")
+
+nrow(merge.table4)
+#[1] 5946586
+
+
+#Remove chr19 to avoid big spike from APOE and select just p-value columns
+merge.table4.P <- merge.table4 %>%
+	filter(CHR != 19) %>%
+	select(P.value.trans, P.value.EUR, P.value) %>%
+	as.data.frame
+
+# Test correlation
+transxEUR <- (cor(merge.table4.P$P.value.trans, merge.table4.P$P.value.EUR))^2
+#0.0425
+transxAA <- (cor(merge.table4.P$P.value.trans, merge.table4.P$P.value))^2
+#[1] 0.0027
+EURxAA <- (cor(merge.table4.P$P.value.EUR, merge.table4.P$P.value))^2
+#[1] 6.951267e-08
+```
+
+
+
+
+```{bash}
+# Get SNP peaks
+## Jun 2017 (transethnic)
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_INT_wt_APOE.e4.status_p-value_only.tbx --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 30000 --out_file Jun_transethnic_APOE_int_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_transethnic_APOE_int_SNP_peaks.log &
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_APOE.e4.non-carriers_p-value_only.tbx --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 150000 --out_file Jun_transethnic_APOE_noncarriers_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_transethnic_APOE_noncarriers_SNP_peaks.log &
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_APOE.e4.carriers_p-value_only.tbx --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 150000 --out_file Jun_transethnic_APOE_carriers_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_transethnic_APOE_carriers_SNP_peaks.log &
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_ALL.sample_p-value_only.tbx --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 150000 --out_file Jun_transethnic_all_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_transethnic_all_SNP_peaks.log &
+
+---------
+
+
+## Kunkle 2020 (African Americans)
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00100-p-value_only/Kunkle2020_ADGC_AA_META_Model2_SummaryStats_p-value_only.txt --p_value Pvalue --chromosome Chr --position Pos --p_min 1e-6 --window 150000 --out_file Kunkle_AA_APOE_adj_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Kunkle_AA_APOE_adj_SNP_peaks.log &
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00100-p-value_only/Kunkle2020_ADGC_AA_META_Model1_SummaryStats_p-value_only.txt --p_value Pvalue --chromosome Chr --position Pos --p_min 1e-6 --window 150000 --out_file Kunkle_AA_all_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Kunkle_AA_all_adj_SNP_peaks.log &
+
+----------
+
+
+## Jun 2016 (Europeans)
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_INT.wt.APOE_p-value_only.txt --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 150000 --out_file Jun_Eur_APOE_int_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_Eur_APOE_int_SNP_peaks.log &
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_APOE.e4.Noncarriers_p-value_only.txt --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 150000 --out_file Jun_Eur_APOE_noncarriers_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_Eur_APOE_noncarriers_SNP_peaks.log &
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_APOE.e4.Carriers_p-value_only.txt --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 150000 --out_file Jun_Eur_APOE_carriers_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_Eur_APOE_carriers_SNP_peaks.log &
+
+R -q --vanilla --args /nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_All.Sample_p-value_only.txt --p_value P.value --chromosome X.CHR --position BP --p_min 1e-6 --window 150000 --out_file Jun_Eur_all_SNP_peaks.txt < /nfs/beluga2_home/hkings/git/miscellaneous_GWAS_scripts/SNP_peaks.R > Jun_Eur_all_SNP_peaks.log &
+
+
+```
+
+
+```{R}
+# Look up hits between each study
+#For extracting P-values for hits
+#Expects files to have columns Score.pval, pos, and chr
+library(dplyr)
+
+#Load tabels to get hits from (In the form of top-hits tables(
+
+Jun_transethnic_APOE_int_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_transethnic_APOE_int_SNP_peaks.txt", header = TRUE)
+
+Jun_transethnic_APOE_carriers_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_transethnic_APOE_carriers_SNP_peaks.txt", header = TRUE)
+
+Jun_transethnic_APOE_noncarriers_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_transethnic_APOE_noncarriers_SNP_peaks.txt", header = TRUE)
+
+Jun_transethnic_all_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_transethnic_all_SNP_peaks.txt", header = TRUE)
+
+Kunkle_AA_APOE_adj_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Kunkle_AA_APOE_adj_SNP_peaks.txt", header = TRUE)
+
+Kunkle_AA_no_APOE_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Kunkle_AA_no_APOE_SNP_peaks.txt", header = TRUE)
+
+Jun_Eur_APOE_int_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_Eur_APOE_int_SNP_peaks.txt", header = TRUE)
+
+Jun_Eur_APOE_noncarriers_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_Eur_APOE_noncarriers_SNP_peaks.txt", header = TRUE)
+
+Jun_Eur_APOE_carriers_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_Eur_APOE_carriers_SNP_peaks.txt", header = TRUE)
+
+Jun_Eur_all_SNP_peaks <- read.table("/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/Jun_Eur_all_SNP_peaks.txt", header = TRUE)
+
+
+
+#Make a vector of the names of each table
+hits.list <- list("trans_int" = Jun_transethnic_APOE_int_SNP_peaks, "trans_carrier" = Jun_transethnic_APOE_carriers_SNP_peaks, "trans_NC" = Jun_transethnic_APOE_noncarriers_SNP_peaks, "trans_all" = Jun_transethnic_all_SNP_peaks, "AA_adj" = Kunkle_AA_APOE_adj_SNP_peaks, "AA_all" = Kunkle_AA_no_APOE_SNP_peaks, "Eur_int" = Jun_Eur_APOE_int_SNP_peaks, "Eur_NC" = Jun_Eur_APOE_noncarriers_SNP_peaks, "Eur_carrier" = Jun_Eur_APOE_carriers_SNP_peaks, "Eur_all" = Jun_Eur_all_SNP_peaks)
+
+
+#Load tables to look-up hits in (in the form of full assocation results
+Jun_col_names <- c("chr", "pos", "MarkerName", "Allele1", "Allele2", "Score.pval")
+#Marker_Name = chr-baseposition
+
+Jun_transethnic_APOE_int <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_INT_wt_APOE.e4.status_p-value_only.tbx", col.names = Jun_col_names)
+
+Jun_transethnic_APOE_noncarriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_APOE.e4.non-carriers_p-value_only.tbx", col.names = Jun_col_names)
+
+Jun_transethnic_APOE_carriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_APOE.e4.carriers_p-value_only.tbx", col.names = Jun_col_names)
+
+Jun_transethnic_all <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00056-p-value_only/META_Transethnic_AD_GWAS_Discovery_in_ALL.sample_p-value_only.tbx", col.names = Jun_col_names)
+
+Kunkle_col_names <- c("chr", "pos", "MarkerName", "Effect_Allele", "Non_Effect_Allele", "Score.pval")
+
+Kunkle_AA_APOE_adj <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00100-p-value_only/Kunkle2020_ADGC_AA_META_Model2_SummaryStats_p-value_only.txt", col.names = Kunkle_col_names, header = TRUE)
+
+Kunkle_AA_all <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00100-p-value_only/Kunkle2020_ADGC_AA_META_Model1_SummaryStats_p-value_only.txt", col.names = Kunkle_col_names, header = TRUE)
+
+Jun_col_names2 <- c("chr", "pos", "SNP", "MarkerName", "Allele1", "Allele2", "Score.pval")
+
+Jun_Eur_APOE_int <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_INT.wt.APOE_p-value_only.txt", col.names = Jun_col_names2)
+#Build 37
+
+Jun_Eur_APOE_noncarriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_APOE.e4.Noncarriers_p-value_only.txt", col.names = Jun_col_names2)
+
+Jun_Eur_APOE_carriers <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_APOE.e4.Carriers_p-value_only.txt", col.names = Jun_col_names2)
+
+Jun_Eur_all <- read.table("/nfs/beluga0_home/DATA/SummaryStats/NG00078-p-value_only/META_IGAP.7.ADGC.15_MODEL_All.Sample_p-value_only.txt", col.names = Jun_col_names2)
+
+p_lookup.list <- list("trans_int" = Jun_transethnic_APOE_int, "trans_NC" = Jun_transethnic_APOE_noncarriers, "trans_carrier" = Jun_transethnic_APOE_carriers, "trans_all" = Jun_transethnic_all, "AA_adj" = Kunkle_AA_APOE_adj, "AA_all" = Kunkle_AA_all, "Eur_int" = Jun_Eur_APOE_int, "Eur_NC" = Jun_Eur_APOE_noncarriers, "Eur_carrier" = Jun_Eur_APOE_carriers, "Eur_all" = Jun_Eur_all)
+
+
+get_p <- function(hit_from, p_from, thresh = 1.01, order_chr_pos = TRUE){
+#get_p looks up a SNP by chr and pos in hit_from table and extracts the associated p-value from p_from table. A threhsold of p-values for hits to include from hit_from table can be provided
+    #In itialize empty lists to host chr and pos from hit_from and p-values from p_from
+    chrpos.list <- c()
+    p.list <- c()
+    hit_from_thresh <- hit_from[hit_from$Score.pval < thresh, ]
+    #exclude APOE region:
+    #hit_from_thresh <- hit_from_thresh[!(hit_from_thresh$chr == 19 & hit_from_thresh$pos > 49500000 & hit_from_thresh$pos < 50750000),]
+    if(order_chr_pos == TRUE){
+      #order by chr:pos
+      hit_from_thresh <- hit_from_thresh[order(hit_from_thresh$chr, hit_from_thresh$pos),]
+      }
+    if(nrow(hit_from_thresh)>0){
+        for(row in 1:nrow(hit_from_thresh)){
+            hit_from_row <- hit_from_thresh[row,]
+            #Record the chr and pos of each hit in hit_from:
+            hit_chrpos <- paste0(hit_from_row$chr, ": ", hit_from_row$pos)
+            chrpos.list <- append(chrpos.list, hit_chrpos)
+            #Record p-values associated with this hit in p_from:
+            p.val <- signif(p_from[p_from$chr == hit_from_row$chr & p_from$pos == hit_from_row$pos, "Score.pval"], 2)
+            p.val <- ifelse(identical(p.val, numeric(0)), NA, p.val) #non-matches for p-values won't append to p.list, so convert to NA's
+            p.list <- append(p.list, p.val)
+          }
+        } else {
+        p.list <- NA
+        }
+    #Collapse both vectors into single, line seperated strings:
+    chrpos.list <- paste(chrpos.list, collapse = "\n")
+    chrpos.list_save <<- chrpos.list
+    paste(p.list, collapse = "\n")
+}
+
+#test
+get_p(Kunkle_AA_no_APOE_SNP_peaks , Jun_Eur_all)
+      
+
+#hit_from_tables.list is a named list of tables to extract chromosomal positions from based on a p-value threshold (these should already be filtered to just lead SNPs)
+#p_from_tables.list is a named list of tables (usually association results) to extract p values from based on matches to hits in hits tables
+#thresh is the p-value threshold below which to lookup up hits (gets passed to get_p fuction)
+make_hits_table <- function(hit_from_tables.list, p_from_tables.list, thresh = 1.01){
+    print(paste0("p-value-threshold: ", thresh))
+    i <- 1
+    lookup.table <- data.frame(matrix(ncol = length(hit_from_tables.list), nrow = length(p_from_tables.list)+1))
+    rownames(lookup.table) <- c("hits", names(p_from_tables.list))
+    colnames(lookup.table) <- names(hit_from_tables.list)
+
+    for(hits.table in hit_from_tables.list){
+        p_values.list <- c()
+        j <- 2
+        for(p.table in p_from_tables.list){
+            lookup.table[j,i] <- get_p(hits.table, p.table, thresh)
+            j <- j + 1
+        }
+        lookup.table[1,i] <- chrpos.list_save
+        i <- i + 1
+    }
+    return(lookup.table)
+}
+         
+         
+lookup.table_sug_sig <- make_hits_table(hits.list, p_lookup.list)
+#Note: mutliple lines per cell - need to open in excel to view properly
+#Since the suggestive significance threshold 1E-6 was already used to generate the SNP_peaks tables, I won't set a threshold here (it uses a default of 1.01, which will include anything in the SNP_peaks tables)
+
+write.csv(lookup.table_sug_sig, "/nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/hkings/past_studies_GWAS_analysis/lookup_table_past_AD_GWAS_sug_sig.csv")
+```
