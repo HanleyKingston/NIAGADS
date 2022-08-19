@@ -3,9 +3,9 @@ Note: This is a summary of where to find files and analyses. README's with actua
 
 # Initial data sources:
 ## Phenotype
->--Phenotype file: /nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_08_24_phenotype_data.csv
->--APOE genotypes: /nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_12_17 APOE results.csv
->--Age and sample source: /nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_11_16\ Age\ and\ Source\ File.csv	(note: source of Sampled.Age and AgeAtLastEval variable... the phenotype file also has an AgeAtLastEval variable, but it is less complete)
+--Phenotype file: /nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_08_24_phenotype_data.csv
+--APOE genotypes: /nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_12_17 APOE results.csv
+--Age and sample source: /nfs/beluga0_home/DATA/NIAGADS/NG00020/NG00020_LOAD_phenotype_files/NG00020_LOAD_phenotype/phenotype/2009_11_16\ Age\ and\ Source\ File.csv	(note: source of Sampled.Age and AgeAtLastEval variable... the phenotype file also has an AgeAtLastEval variable, but it is less complete)
 
 ## PCs/GRM
 --PC Relate GRM (by Jai): /nfs/beluga0_home/ANALYSIS/NIAGADS/NG00020/pcs_grm_pheno_only/out/b_pcrelate.rds
